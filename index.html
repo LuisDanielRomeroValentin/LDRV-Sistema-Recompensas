@@ -4,6 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Misión Estrellas</title>
+<meta name="description" content="Tareas de la semana, estrellas y recompensas para los peques de la casa">
 <meta name="theme-color" content="#4338ca">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="mobile-web-app-capable" content="yes">
@@ -12,33 +13,29 @@
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="apple-touch-icon.png">
 <link rel="icon" type="image/png" href="favicon-64.png">
-<script>
-/* ============ PON AQUÍ LA URL DE TU APLICACIÓN WEB DE APPS SCRIPT (termina en /exec) ============ */
-const GAS_URL = "https://script.google.com/macros/s/AKfycby_6XCXXHYc-cA2k4qq3RoZURhMliNFe0AgQRad1BL5ItOSNFJvzW5eCuAJUsC-1ZMiyA/exec";
-/* ================================================================================================ */
-</script>
-<style>
-html,body{margin:0;height:100%;background:#4338ca;font-family:system-ui,sans-serif}
-iframe{position:fixed;left:0;top:calc(env(safe-area-inset-top,0px) + 6px);width:100%;height:calc(100% - env(safe-area-inset-top,0px) - 6px);height:calc(100dvh - env(safe-area-inset-top,0px) - 6px);border:0;background:#fff3c4}
-#splash{position:fixed;inset:0;display:grid;place-items:center;color:#fff;text-align:center;padding:24px;
-  background:linear-gradient(160deg,#4338ca,#d646c8,#ff8c46);transition:opacity .4s}
-#splash img{width:140px;height:140px;border-radius:32px;box-shadow:0 10px 30px rgba(0,0,0,.3)}
-#splash p{font-size:20px;font-weight:700;margin:14px 0 0}
-</style>
+<link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<div id="splash"><div><img src="icon-192.png" alt=""><p id="msg">Cargando estrellas…</p></div></div>
-<script>
-const ok = /^https:\/\/script\.google\.com\/(a\/[^\/]+\/)?macros\/s\/[^\/]+\/exec/.test(GAS_URL);
-if (!ok) {
-  document.getElementById('msg').textContent = 'Falta poner la URL de Apps Script en index.html (variable GAS_URL).';
-} else {
-  const f = document.createElement('iframe');
-  f.src = GAS_URL;
-  f.allow = 'clipboard-write';
-  f.onload = () => { const s = document.getElementById('splash'); s.style.opacity = 0; setTimeout(() => s.remove(), 450); };
-  document.body.appendChild(f);
-}
-</script>
+
+<div id="bg-stars" aria-hidden="true"></div>
+
+<div id="splash">
+  <div class="splash-inner">
+    <img src="icon-192.png" alt="">
+    <p>Cargando estrellas…</p>
+  </div>
+</div>
+
+<main id="app"></main>
+
+<div id="confetti" aria-hidden="true"></div>
+<div id="toast" role="status"></div>
+
+<div id="sheet-back" hidden></div>
+<div id="sheet" hidden></div>
+
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="config.js"></script>
+<script src="app.js"></script>
 </body>
 </html>
