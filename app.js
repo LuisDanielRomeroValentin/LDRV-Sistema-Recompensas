@@ -164,6 +164,12 @@
   const rewardFor = day => state.data.rewards.find(r => r.day === day) || { day, min_stars: 0, ...(REWARD_DAYS.find(x => x.day === day) || {}) };
 
   /* ================= MUTACIONES ================= */
+  /* OJO: supabase-js NO lanza excepciones: si un INSERT/UPDATE es
+     rechazado (por ejemplo por las reglas de seguridad), el error
+     viene en el resultado y hay que comprobarlo a mano. Sin esto,
+     la app decía "Hijo añadido" aunque no se guardara nada. */
+  const db = async query => { const { error } = await query; if (error) throw new Error(error.message); };
+
   async function mutate(fn, okMsg) {
     try {
       await fn();
@@ -173,7 +179,7 @@
       return true;
     } catch (err) {
       console.error(err);
-      toast('No se ha podido guardar 😕 (¿sin conexión?)', true);
+      toast(`No se ha podido guardar: ${err.message || 'error'}`, true);
       return false;
     }
   }
@@ -184,57 +190,57 @@
     mutate(async () => {
       if (!comp) {
         const t = state.data.templates.find(x => x.id === tid);
-        await sb.from('completions').upsert({ template_id: tid, child_id: t.child_id, date: iso, status }, { onConflict: 'template_id,date' });
+        await db(sb.from('completions').upsert({ template_id: tid, child_id: t.child_id, date: iso, status }, { onConflict: 'template_id,date' }));
       } else if (comp.status === status) {
-        await sb.from('completions').delete().eq('id', comp.id);
+        await db(sb.from('completions').delete().eq('id', comp.id));
       } else {
-        await sb.from('completions').update({ status }).eq('id', comp.id);
+        await db(sb.from('completions').update({ status }).eq('id', comp.id));
       }
     }).then(ok => { if (ok && nuevo && status === 'done') confetti(); });
   }
 
   const saveTemplate = (id, values) => mutate(async () => {
-    if (id) await sb.from('task_templates').update(values).eq('id', id);
-    else await sb.from('task_templates').insert({ ...values, child_id: state.childId });
+    if (id) await db(sb.from('task_templates').update(values).eq('id', id));
+    else await db(sb.from('task_templates').insert({ ...values, child_id: state.childId }));
   }, id ? 'Tarea actualizada ✏️' : 'Tarea añadida ➕');
 
-  const deleteTemplate = id => mutate(async () => { await sb.from('task_templates').delete().eq('id', id); }, 'Tarea borrada 🗑️');
+  const deleteTemplate = id => mutate(async () => { await db(sb.from('task_templates').delete().eq('id', id)); }, 'Tarea borrada 🗑️');
 
   const saveOverride = (tid, iso, values) => mutate(async () => {
-    await sb.from('task_overrides').upsert({ template_id: tid, date: iso, ...values }, { onConflict: 'template_id,date' });
+    await db(sb.from('task_overrides').upsert({ template_id: tid, date: iso, ...values }, { onConflict: 'template_id,date' }));
   }, 'Cambio aplicado solo a esta semana 📅');
 
   const clearOverride = (tid, iso) => mutate(async () => {
-    await sb.from('task_overrides').delete().eq('template_id', tid).eq('date', iso);
+    await db(sb.from('task_overrides').delete().eq('template_id', tid).eq('date', iso));
   }, 'Vuelta a la tarea original ↩️');
 
   const saveExtra = (id, values, childId) => mutate(async () => {
-    if (id) await sb.from('extra_tasks').update(values).eq('id', id);
-    else await sb.from('extra_tasks').insert({ ...values, child_id: childId });
+    if (id) await db(sb.from('extra_tasks').update(values).eq('id', id));
+    else await db(sb.from('extra_tasks').insert({ ...values, child_id: childId }));
   }, id ? 'Tarea extra actualizada 🎁' : 'Tarea extra añadida 🎁');
 
-  const deleteExtra = id => mutate(async () => { await sb.from('extra_tasks').delete().eq('id', id); }, 'Tarea extra borrada 🗑️');
+  const deleteExtra = id => mutate(async () => { await db(sb.from('extra_tasks').delete().eq('id', id)); }, 'Tarea extra borrada 🗑️');
 
   function toggleExtra(id) {
     const ex = state.data.extras.find(e => e.id === id);
     const nuevo = ex.status !== 'done';
-    mutate(async () => { await sb.from('extra_tasks').update({ status: nuevo ? 'done' : 'pending' }).eq('id', id); })
+    mutate(async () => { await db(sb.from('extra_tasks').update({ status: nuevo ? 'done' : 'pending' }).eq('id', id)); })
       .then(ok => { if (ok && nuevo) confetti(); });
   }
 
-  const addPenalty = values => mutate(async () => { await sb.from('penalties').insert({ ...values, child_id: state.childId }); }, 'Penalización aplicada 🚫');
-  const deletePenalty = id => mutate(async () => { await sb.from('penalties').delete().eq('id', id); }, 'Penalización anulada ↩️');
+  const addPenalty = values => mutate(async () => { await db(sb.from('penalties').insert({ ...values, child_id: state.childId })); }, 'Penalización aplicada 🚫');
+  const deletePenalty = id => mutate(async () => { await db(sb.from('penalties').delete().eq('id', id)); }, 'Penalización anulada ↩️');
 
   const saveReward = (day, values) => mutate(async () => {
-    await sb.from('rewards').upsert({ day, ...values }, { onConflict: 'day' });
+    await db(sb.from('rewards').upsert({ family_id: state.myFamilyId, day, ...values }, { onConflict: 'family_id,day' }));
   }, 'Recompensa guardada 🏆');
 
   const saveChild = (id, values) => mutate(async () => {
-    if (id) await sb.from('children').update(values).eq('id', id);
-    else await sb.from('children').insert(values);
+    if (id) await db(sb.from('children').update(values).eq('id', id));
+    else await db(sb.from('children').insert({ ...values, family_id: state.myFamilyId }));
   }, id ? 'Hijo actualizado 👧' : 'Hijo añadido 👧');
 
-  const deleteChild = id => mutate(async () => { await sb.from('children').delete().eq('id', id); }, 'Hijo borrado 🗑️');
+  const deleteChild = id => mutate(async () => { await db(sb.from('children').delete().eq('id', id)); }, 'Hijo borrado 🗑️');
 
   async function copyWeek() {
     const prev = addDays(state.weekStart, -7);
@@ -249,8 +255,8 @@
       .map(e => ({ child_id: e.child_id, date: newISOs[prevISOs.indexOf(e.date)], title: e.title, emoji: e.emoji, stars: e.stars, status: 'pending' }));
     if (!ovRows.length && !exRows.length) return toast('La semana anterior no tenía cambios ni extras 🙂');
     await mutate(async () => {
-      if (ovRows.length) await sb.from('task_overrides').upsert(ovRows, { onConflict: 'template_id,date' });
-      if (exRows.length) await sb.from('extra_tasks').insert(exRows);
+      if (ovRows.length) await db(sb.from('task_overrides').upsert(ovRows, { onConflict: 'template_id,date' }));
+      if (exRows.length) await db(sb.from('extra_tasks').insert(exRows));
     }, 'Semana copiada 📋');
   }
 
