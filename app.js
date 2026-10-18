@@ -1293,5 +1293,6 @@
     }
   })();
 
+  window.MISION_DEBUG = { sb, state }; // ayuda para depurar desde la consola del navegador (F12)
   init();
 })();
