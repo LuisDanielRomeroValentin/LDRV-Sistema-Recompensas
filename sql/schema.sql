@@ -1,16 +1,48 @@
 -- ============================================================
--- MISIÓN ESTRELLAS · Esquema para Supabase
--- Instrucciones: copia TODO este archivo, pégalo en el SQL Editor
--- de Supabase (nueva consulta) y pulsa RUN.
+-- MISIÓN ESTRELLAS v2 · Multi-familias · Esquema para Supabase
+-- Pega TODO este archivo en el SQL Editor de Supabase y pulsa RUN.
+--
+-- Si ya tenías las tablas de la versión anterior (una sola familia)
+-- y quieres conservar los datos, ejecuta ANTES:
+--   sql/migracion-multifamilia.sql
 -- ============================================================
 
 create extension if not exists "pgcrypto";
 
 -- ------------------------------------------------------------
--- Hijos de la familia
+-- Administradores (el "super user"): pon aquí tu email
+-- Ya desde este archivo puedes sembrar el tuyo, por ejemplo:
+--   insert into public.admins (email) values ('tu@email.com')
+--   on conflict do nothing;
+-- ------------------------------------------------------------
+create table if not exists public.admins (
+  email text primary key
+);
+
+-- ------------------------------------------------------------
+-- Familias y sus cuentas de acceso
+-- role: 'parent' (puede escribir) | 'kids' (solo lectura)
+-- ------------------------------------------------------------
+create table if not exists public.families (
+  id uuid primary key default gen_random_uuid(),
+  name text not null,
+  created_at timestamptz not null default now()
+);
+
+create table if not exists public.family_members (
+  id uuid primary key default gen_random_uuid(),
+  user_id uuid not null unique references auth.users(id) on delete cascade,
+  family_id uuid not null references public.families(id) on delete cascade,
+  role text not null default 'parent' check (role in ('parent','kids')),
+  created_at timestamptz not null default now()
+);
+
+-- ------------------------------------------------------------
+-- Hijos de cada familia
 -- ------------------------------------------------------------
 create table if not exists public.children (
   id uuid primary key default gen_random_uuid(),
+  family_id uuid not null references public.families(id) on delete cascade,
   name text not null,
   emoji text not null default '🦊',
   color text not null default '#7c3aed',
@@ -86,59 +118,148 @@ create table if not exists public.penalties (
 );
 
 -- ------------------------------------------------------------
--- Recompensas: una fila por día (viernes / sábado / domingo)
+-- Recompensas: una fila por familia y día
 -- ------------------------------------------------------------
 create table if not exists public.rewards (
-  day text primary key check (day in ('viernes','sabado','domingo')),
+  family_id uuid not null references public.families(id) on delete cascade,
+  day text not null check (day in ('viernes','sabado','domingo')),
   min_stars int not null default 0,
   emoji text not null default '🎮',
-  label text not null default 'Jugar a la tablet'
+  label text not null default 'Jugar a la tablet',
+  primary key (family_id, day)
 );
-
-insert into public.rewards (day, min_stars, emoji, label) values
-  ('viernes', 8,  '🎮', 'Jugar a la tablet'),
-  ('sabado',  10, '🕹️', 'Tiempo extra de tablet'),
-  ('domingo', 12, '📺', 'Película + tablet')
-on conflict (day) do nothing;
 
 -- ------------------------------------------------------------
 -- Índices
 -- ------------------------------------------------------------
-create index if not exists idx_tpl_child_wd   on public.task_templates(child_id, weekday);
-create index if not exists idx_comp_child     on public.completions(child_id, date);
-create index if not exists idx_comp_tpl       on public.completions(template_id, date);
-create index if not exists idx_ovr_tpl_date   on public.task_overrides(template_id, date);
-create index if not exists idx_extra_child    on public.extra_tasks(child_id, date);
-create index if not exists idx_pen_child      on public.penalties(child_id, date);
+create index if not exists idx_members_family  on public.family_members(family_id);
+create index if not exists idx_children_family on public.children(family_id);
+create index if not exists idx_tpl_child_wd    on public.task_templates(child_id, weekday);
+create index if not exists idx_comp_child      on public.completions(child_id, date);
+create index if not exists idx_comp_tpl        on public.completions(template_id, date);
+create index if not exists idx_ovr_tpl_date    on public.task_overrides(template_id, date);
+create index if not exists idx_extra_child     on public.extra_tasks(child_id, date);
+create index if not exists idx_pen_child       on public.penalties(child_id, date);
 
 -- ============================================================
--- SEGURIDAD (RLS)
--- Cualquiera con la URL puede LEER (los hijos ven todo),
--- pero solo quien haya iniciado sesión como padres puede ESCRIBIR.
+-- FUNCIONES AUXILIARES (seguras: se ejecutan como superusuario
+-- pero solo devuelven datos del propio usuario)
 -- ============================================================
 
-alter table public.children        enable row level security;
-alter table public.task_templates  enable row level security;
-alter table public.task_overrides  enable row level security;
-alter table public.completions     enable row level security;
-alter table public.extra_tasks     enable row level security;
-alter table public.penalties       enable row level security;
-alter table public.rewards         enable row level security;
+-- ¿Es este usuario administrador?
+create or replace function public.is_admin() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (
+    select 1 from public.admins a
+    where lower(a.email) = lower(coalesce(auth.jwt() ->> 'email', ''))
+  );
+$$;
 
--- Lectura pública (hijos)
-create policy "lectura children"        on public.children        for select using (true);
-create policy "lectura templates"       on public.task_templates  for select using (true);
-create policy "lectura overrides"       on public.task_overrides  for select using (true);
-create policy "lectura completions"     on public.completions     for select using (true);
-create policy "lectura extras"          on public.extra_tasks     for select using (true);
-create policy "lectura penalties"       on public.penalties       for select using (true);
-create policy "lectura rewards"         on public.rewards         for select using (true);
+-- ¿A qué familia pertenece este usuario? (null si a ninguna)
+create or replace function public.my_family() returns uuid
+language sql stable security definer set search_path = public as $$
+  select family_id from public.family_members where user_id = auth.uid() limit 1;
+$$;
 
--- Escritura solo para padres (usuarios autenticados)
-create policy "escritura children"      on public.children        for all to authenticated using (true) with check (true);
-create policy "escritura templates"     on public.task_templates  for all to authenticated using (true) with check (true);
-create policy "escritura overrides"     on public.task_overrides  for all to authenticated using (true) with check (true);
-create policy "escritura completions"   on public.completions     for all to authenticated using (true) with check (true);
-create policy "escritura extras"        on public.extra_tasks     for all to authenticated using (true) with check (true);
-create policy "escritura penalties"     on public.penalties       for all to authenticated using (true) with check (true);
-create policy "escritura rewards"       on public.rewards         for all to authenticated using (true) with check (true);
+-- ¿Tiene cuenta de papás (con permiso de escritura)?
+create or replace function public.is_parent() returns boolean
+language sql stable security definer set search_path = public as $$
+  select exists (select 1 from public.family_members where user_id = auth.uid() and role = 'parent');
+$$;
+
+revoke execute on function public.is_admin()  from public, anon;
+revoke execute on function public.my_family() from public, anon;
+revoke execute on function public.is_parent() from public, anon;
+grant execute on function public.is_admin()  to authenticated;
+grant execute on function public.my_family() to authenticated;
+grant execute on function public.is_parent() to authenticated;
+
+-- ============================================================
+-- SEGURIDAD (RLS): cada familia solo ve LO SUYO
+-- ============================================================
+
+alter table public.admins         enable row level security;
+alter table public.families       enable row level security;
+alter table public.family_members enable row level security;
+alter table public.children       enable row level security;
+alter table public.task_templates enable row level security;
+alter table public.task_overrides enable row level security;
+alter table public.completions    enable row level security;
+alter table public.extra_tasks    enable row level security;
+alter table public.penalties      enable row level security;
+alter table public.rewards        enable row level security;
+
+-- admins
+create policy "admins_select" on public.admins for select to authenticated using (is_admin());
+create policy "admins_write"  on public.admins for all   to authenticated using (is_admin()) with check (is_admin());
+
+-- families
+create policy "families_select" on public.families for select to authenticated
+  using (is_admin() or exists (select 1 from public.family_members m where m.family_id = families.id and m.user_id = auth.uid()));
+create policy "families_write"  on public.families for all to authenticated
+  using (is_admin()) with check (is_admin());
+
+-- family_members
+create policy "members_select" on public.family_members for select to authenticated
+  using (user_id = auth.uid() or is_admin());
+create policy "members_write"  on public.family_members for all to authenticated
+  using (is_admin()) with check (is_admin());
+
+-- children
+create policy "children_select" on public.children for select to authenticated
+  using (family_id = my_family() or is_admin());
+create policy "children_write"  on public.children for all to authenticated
+  using ((is_parent() and family_id = my_family()) or is_admin())
+  with check ((is_parent() and family_id = my_family()) or is_admin());
+
+-- task_templates
+create policy "templates_select" on public.task_templates for select to authenticated
+  using (is_admin() or exists (select 1 from public.children c where c.id = child_id and c.family_id = my_family()));
+create policy "templates_write"  on public.task_templates for all to authenticated
+  using ((is_parent() and exists (select 1 from public.children c where c.id = child_id and c.family_id = my_family())) or is_admin())
+  with check ((is_parent() and exists (select 1 from public.children c where c.id = child_id and c.family_id = my_family())) or is_admin());
+
+-- completions
+create policy "completions_select" on public.completions for select to authenticated
+  using (is_admin() or exists (select 1 from public.children c where c.id = child_id and c.family_id = my_family()));
+create policy "completions_write"  on public.completions for all to authenticated
+  using ((is_parent() and exists (select 1 from public.children c where c.id = child_id and c.family_id = my_family())) or is_admin())
+  with check ((is_parent() and exists (select 1 from public.children c where c.id = child_id and c.family_id = my_family())) or is_admin());
+
+-- extra_tasks
+create policy "extras_select" on public.extra_tasks for select to authenticated
+  using (is_admin() or exists (select 1 from public.children c where c.id = child_id and c.family_id = my_family()));
+create policy "extras_write"  on public.extra_tasks for all to authenticated
+  using ((is_parent() and exists (select 1 from public.children c where c.id = child_id and c.family_id = my_family())) or is_admin())
+  with check ((is_parent() and exists (select 1 from public.children c where c.id = child_id and c.family_id = my_family())) or is_admin());
+
+-- penalties
+create policy "penalties_select" on public.penalties for select to authenticated
+  using (is_admin() or exists (select 1 from public.children c where c.id = child_id and c.family_id = my_family()));
+create policy "penalties_write"  on public.penalties for all to authenticated
+  using ((is_parent() and exists (select 1 from public.children c where c.id = child_id and c.family_id = my_family())) or is_admin())
+  with check ((is_parent() and exists (select 1 from public.children c where c.id = child_id and c.family_id = my_family())) or is_admin());
+
+-- task_overrides
+create policy "overrides_select" on public.task_overrides for select to authenticated
+  using (is_admin() or exists (select 1 from public.task_templates t join public.children c on c.id = t.child_id
+                                where t.id = template_id and c.family_id = my_family()));
+create policy "overrides_write"  on public.task_overrides for all to authenticated
+  using ((is_parent() and exists (select 1 from public.task_templates t join public.children c on c.id = t.child_id
+                                  where t.id = template_id and c.family_id = my_family())) or is_admin())
+  with check ((is_parent() and exists (select 1 from public.task_templates t join public.children c on c.id = t.child_id
+                                      where t.id = template_id and c.family_id = my_family())) or is_admin());
+
+-- rewards (por familia)
+create policy "rewards_select" on public.rewards for select to authenticated
+  using (family_id = my_family() or is_admin());
+create policy "rewards_write"  on public.rewards for all to authenticated
+  using ((is_parent() and family_id = my_family()) or is_admin())
+  with check ((is_parent() and family_id = my_family()) or is_admin());
+
+-- ------------------------------------------------------------
+-- ¡IMPORTANTE! Sustituye tu@email.com y ejecuta (una sola vez):
+--
+-- insert into public.admins (email) values ('tu@email.com')
+-- on conflict do nothing;
+-- ------------------------------------------------------------

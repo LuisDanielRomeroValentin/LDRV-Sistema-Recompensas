@@ -11,8 +11,7 @@
   const CFG = window.APP_CONFIG || {};
   const CONFIGURED = Boolean(
     CFG.SUPABASE_URL && !String(CFG.SUPABASE_URL).includes('TU-') &&
-    CFG.SUPABASE_ANON_KEY && !String(CFG.SUPABASE_ANON_KEY).includes('TU-') &&
-    CFG.PADRES_EMAIL
+    CFG.SUPABASE_ANON_KEY && !String(CFG.SUPABASE_ANON_KEY).includes('TU-')
   );
   const sb = CONFIGURED ? window.supabase.createClient(CFG.SUPABASE_URL, CFG.SUPABASE_ANON_KEY) : null;
 
@@ -76,8 +75,12 @@
   /* ---------------- Estado ---------------- */
   const hoy = new Date();
   const state = {
-    view: 'home',                    // home | kids | child | login | parents
+    view: 'home',                    // home | kids | child | login | parents | admin
     session: null,
+    role: null,                      // 'parent' | 'kids' | null
+    isAdmin: false,
+    myFamilyId: null,
+    adminFamilies: [],
     childId: null,
     weekStart: startOfWeek(hoy),
     day: Math.min(Math.max(weekdayNum(toISO(hoy)), 1), 5),
@@ -87,20 +90,35 @@
   let lastActivity = Date.now();
 
   /* ================= DATOS ================= */
+  /* Todo se filtra por la familia del usuario que tiene sesión;
+     además Supabase (RLS) no devolvería datos de otras familias. */
   async function loadData() {
-    const [c, t, o, co, e, p, r] = await Promise.all([
-      sb.from('children').select('*').order('created_at'),
-      sb.from('task_templates').select('*'),
-      sb.from('task_overrides').select('*'),
-      sb.from('completions').select('*'),
-      sb.from('extra_tasks').select('*'),
-      sb.from('penalties').select('*'),
-      sb.from('rewards').select('*')
+    const fam = state.myFamilyId;
+    const vacio = { children: [], templates: [], overrides: [], completions: [], extras: [], penalties: [], rewards: [] };
+    if (!fam) { state.data = vacio; state.childId = null; return; }
+
+    const { data: kids, error: kErr } = await sb.from('children').select('*').eq('family_id', fam).order('created_at');
+    if (kErr) throw kErr;
+    const ids = (kids || []).map(k => k.id);
+    if (!ids.length) { state.data = { ...vacio, children: kids || [] }; state.childId = null; return; }
+
+    const [t, co, e, p, r] = await Promise.all([
+      sb.from('task_templates').select('*').in('child_id', ids),
+      sb.from('completions').select('*').in('child_id', ids),
+      sb.from('extra_tasks').select('*').in('child_id', ids),
+      sb.from('penalties').select('*').in('child_id', ids),
+      sb.from('rewards').select('*').eq('family_id', fam)
     ]);
-    const err = c.error || t.error || o.error || co.error || e.error || p.error || r.error;
+    const err = t.error || co.error || e.error || p.error || r.error;
     if (err) throw err;
+
+    const tplIds = (t.data || []).map(x => x.id);
+    let o = { data: [], error: null };
+    if (tplIds.length) o = await sb.from('task_overrides').select('*').in('template_id', tplIds);
+    if (o.error) throw o.error;
+
     state.data = {
-      children: c.data || [], templates: t.data || [], overrides: o.data || [],
+      children: kids || [], templates: t.data || [], overrides: o.data || [],
       completions: co.data || [], extras: e.data || [], penalties: p.data || [], rewards: r.data || []
     };
     if (state.childId && !state.data.children.some(x => x.id === state.childId)) state.childId = null;
@@ -236,16 +254,19 @@
     }, 'Semana copiada 📋');
   }
 
-  async function login(code) {
-    const { error } = await sb.auth.signInWithPassword({ email: CFG.PADRES_EMAIL, password: code });
+  async function login(email, password) {
+    const { error } = await sb.auth.signInWithPassword({ email, password });
     if (error) {
-      toast(/fetch|network|Failed/i.test(error.message || '') ? 'Sin conexión a internet 📡' : 'El código no es correcto 🔐', true);
+      toast(/fetch|network|Failed/i.test(error.message || '') ? 'Sin conexión a internet 📡' : 'Email o código incorrectos 🔐', true);
       return false;
     }
     state.session = true;
-    state.view = 'parents';
-    state.tab = state.data.children.length ? 'tareas' : 'hijos';
-    try { await loadData(); } catch (e) { console.error(e); }
+    state.tab = 'tareas';
+    try {
+      await loadIdentity();
+      await loadData();
+    } catch (e) { console.error(e); }
+    state.view = state.role === 'kids' ? 'kids' : 'parents';
     render();
     return true;
   }
@@ -253,10 +274,79 @@
   async function logout(auto) {
     try { await sb.auth.signOut(); } catch (e) { console.error(e); }
     state.session = null;
+    state.role = null;
+    state.isAdmin = false;
+    state.myFamilyId = null;
+    state.adminFamilies = [];
     state.view = 'home';
     render();
-    if (auto) toast('Sesión de papás cerrada por seguridad 🔒');
+    if (auto) toast('Sesión cerrada por seguridad 🔒');
   }
+
+  /* ================= IDENTIDAD Y ADMINISTRACIÓN ================= */
+  async function loadIdentity() {
+    state.role = null; state.isAdmin = false; state.myFamilyId = null;
+    const { data: u } = await sb.auth.getUser();
+    const user = u && u.user;
+    if (!user) return;
+    const { data: adm } = await sb.rpc('is_admin');
+    state.isAdmin = Boolean(adm);
+    const { data: mem } = await sb.from('family_members').select('role, family_id').eq('user_id', user.id).maybeSingle();
+    if (mem) { state.role = mem.role; state.myFamilyId = mem.family_id; }
+  }
+
+  async function loadAdmin() {
+    const { data, error } = await sb.from('families')
+      .select('id, name, created_at, children(count), family_members(count)')
+      .order('created_at');
+    if (error) throw error;
+    state.adminFamilies = data || [];
+  }
+
+  /* Llama a la Edge Function "admin-familias" (solo administrador) */
+  async function invokeAdmin(payload) {
+    const { data, error } = await sb.functions.invoke('admin-familias', { body: payload });
+    if (error) {
+      let msg = 'No se ha podido llamar a la función admin-familias 🛠️';
+      try {
+        const j = await error.context && error.context.json && error.context.json();
+        if (j && j.error) msg = j.error;
+      } catch (e) { /* sin cuerpo legible */ }
+      return { error: msg };
+    }
+    if (data && data.error) return { error: data.error };
+    return data || {};
+  }
+
+  /* El administrador crea su propia familia desde el cliente (sin Edge Function) */
+  async function createMyFamily(name) {
+    try {
+      const { data: u } = await sb.auth.getUser();
+      const { data: fam, error } = await sb.from('families').insert({ name }).select('id').single();
+      if (error) throw error;
+      const { error: mErr } = await sb.from('family_members').insert({ user_id: u.user.id, family_id: fam.id, role: 'parent' });
+      if (mErr) throw mErr;
+      const { error: rErr } = await sb.from('rewards').insert([
+        { family_id: fam.id, day: 'viernes', min_stars: 8, emoji: '🎮', label: 'Jugar a la tablet' },
+        { family_id: fam.id, day: 'sabado', min_stars: 10, emoji: '🕹️', label: 'Tiempo extra de tablet' },
+        { family_id: fam.id, day: 'domingo', min_stars: 12, emoji: '📺', label: 'Película + tablet' }
+      ]);
+      if (rErr) throw rErr;
+      await loadIdentity();
+      await loadData();
+      await loadAdmin();
+      render();
+      toast('Tu familia está lista 🏠');
+    } catch (err) {
+      console.error(err);
+      toast('No se pudo crear la familia 😕', true);
+    }
+  }
+
+  const deleteFamily = id => mutate(async () => {
+    const { error } = await sb.from('families').delete().eq('id', id);
+    if (error) throw error;
+  }, 'Familia borrada 🗑️');
 
   /* ================= UI HELPERS ================= */
   let toastTimer;
@@ -330,9 +420,10 @@
         <ol>
           <li>Crea una cuenta gratis en <b>supabase.com</b> y un <b>New Project</b>.</li>
           <li>En <b>Project Settings ⚙️ → API</b> copia la <b>Project URL</b> y la clave <b>anon public</b> y pégalas en el archivo <code>config.js</code>.</li>
-          <li>En <b>SQL Editor</b> pega todo el archivo <code>sql/schema.sql</code> y pulsa <b>RUN</b>.</li>
-          <li>En <b>Authentication → Users → Add user</b> crea la cuenta de papás (email = el de <code>config.js</code>, contraseña = vuestro código).</li>
+          <li>En <b>SQL Editor</b> pega todo el archivo <code>sql/schema.sql</code> y pulsa <b>RUN</b> (no olvides poner tu email como administrador).</li>
+          <li>En <b>Authentication → Users → Add user</b> crea tu cuenta de administrador.</li>
           <li>En <b>Authentication → Sign In / Providers → Email</b> desactiva <b>Allow new users to sign up</b>.</li>
+          <li>Despliega la función <code>admin-familias</code> (ver README paso 8) para dar de alta familias.</li>
         </ol>
         <p class="muted">La guía completa está en el archivo <code>README.md</code> del proyecto.</p>
       </div>
@@ -350,7 +441,7 @@
     <p class="home-date">📅 ${DIAS_LARGO[d.getDay()]}, ${d.getDate()} de ${MESES_LARGO[d.getMonth()]}</p>
     <div class="home-actions">
       <button class="btn big gold" data-act="go-kids">👧👦 Ver mis estrellas</button>
-      <button class="btn big ghost" data-act="go-parents">🔐 Zona de papás</button>
+      ${state.role === 'kids' ? '' : '<button class="btn big ghost" data-act="go-parents">🔐 Zona de papás</button>'}
     </div>`;
   }
 
@@ -545,20 +636,121 @@
     return `
     <div class="login-wrap">
       <img src="icon-192.png" alt="">
-      <h2>🔐 Zona de papás</h2>
-      <p>Escribid el código familiar para entrar</p>
+      <h2>🔐 Entrar</h2>
+      <p>Email de vuestra familia y vuestro código</p>
       <div class="login-card">
-        <div id="login-err"></div>
         <form id="form-login">
           <div class="field">
-            <label>Código de la familia</label>
-            <input type="password" name="code" inputmode="text" autocomplete="off" required autofocus placeholder="••••••">
+            <label>Email</label>
+            <input type="email" name="email" autocomplete="username" required autofocus placeholder="padres@familia.com">
+          </div>
+          <div class="field">
+            <label>Código (contraseña)</label>
+            <input type="password" name="password" autocomplete="current-password" required placeholder="••••••">
           </div>
           <button class="btn big" type="submit">Entrar 🔓</button>
         </form>
       </div>
-      <p style="margin-top:16px"><button class="btn ghost small" data-act="go-home">← Volver</button></p>
+      <p class="muted" style="color:#fff;opacity:.9;margin-top:14px">¿Eres administrador? Entra con tu cuenta de administrador.</p>
+      <p style="margin-top:10px"><button class="btn ghost small" data-act="go-home">← Volver</button></p>
     </div>`;
+  }
+
+  /* ---------- Vista administrador ---------- */
+  function viewAdmin() {
+    const fams = state.adminFamilies;
+    return `
+    <div class="topbar">
+      <button class="icon-btn" data-act="go-parents">←</button>
+      <h2 class="page-title">🛠️ Administración</h2>
+      <div class="grow"></div>
+      <button class="icon-btn" title="Cerrar sesión" data-act="logout">🔒</button>
+    </div>
+    <div class="card">
+      <p class="card-title">➕ Dar de alta una familia</p>
+      <p class="muted" style="margin-top:0">Crea la cuenta de papás y, si quieres, una cuenta de solo lectura para sus niños.</p>
+      <button class="btn big" data-act="new-family">🛠️ Nueva familia</button>
+    </div>
+    ${state.myFamilyId ? '' : `
+    <div class="card">
+      <p class="card-title">🏠 Tu familia</p>
+      <p class="muted" style="margin-top:0">Todavía no tienes familia propia. Crea una para usar la app con tus hijos.</p>
+      <button class="btn gold" data-act="my-family">➕ Crear MI familia</button>
+    </div>`}
+    <div class="card">
+      <p class="card-title">👨‍👩‍👧‍👦 Familias (${fams.length})</p>
+      ${fams.length ? fams.map(f => `
+        <div class="task parent" data-cat="casa">
+          <div class="emo">🏠</div>
+          <div class="body">
+            <div class="t">${esc(f.name)}</div>
+            <span class="cat">👧 ${f.children && f.children[0] ? f.children[0].count : 0} hijos · 👥 ${f.family_members && f.family_members[0] ? f.family_members[0].count : 0} cuentas</span>
+          </div>
+          <div class="actions">
+            <button class="mini" title="Añadir cuenta" data-act="add-account" data-fid="${f.id}" data-name="${esc(f.name)}">➕</button>
+            <button class="mini" title="Borrar familia" data-act="del-family" data-fid="${f.id}" data-name="${esc(f.name)}">🗑️</button>
+          </div>
+        </div>`).join('') : '<p class="muted center">Aún no hay familias 🏡</p>'}
+    </div>
+    <div class="card tight center muted">
+      🛡️ Cada familia solo ve a sus hijos. El acceso está protegido en el servidor (Supabase RLS): ni siquiera abriendo el código se pueden ver datos de otras familias.
+    </div>`;
+  }
+
+  function sheetCreada(emails) {
+    return `
+    <div class="sheet-head"><h3>✅ Cuentas creadas</h3><button class="sheet-close" data-act="close-sheet">✕</button></div>
+    <div class="card tight">
+      <p style="margin-top:0"><b>📧 Comunica a esa familia estos datos:</b></p>
+      <ul style="padding-left:18px;margin:8px 0">
+        ${emails.map(e => `<li><code>${esc(e)}</code></li>`).join('')}
+      </ul>
+      <p class="muted" style="margin-bottom:0">La contraseña la elegiste tú al crearla. Si la olvidan, bórrales la cuenta y créales otra desde aquí (o pídeles que la cambien en Supabase).</p>
+    </div>`;
+  }
+
+  function sheetNewFamily() {
+    return `
+    <div class="sheet-head"><h3>🛠️ Nueva familia</h3><button class="sheet-close" data-act="close-sheet">✕</button></div>
+    <form id="form-new-family">
+      <div class="field"><label>Nombre de la familia</label><input name="name" required placeholder="Familia García"></div>
+      <div class="field"><label>Email de papás</label><input name="parent_email" type="email" required placeholder="padres@familia.com"></div>
+      <div class="field"><label>Código de papás (mínimo 6 caracteres)</label><input name="parent_password" type="password" required minlength="6" placeholder="••••••"></div>
+      <div class="field">
+        <label>Cuenta de solo lectura para los niños (opcional)</label>
+        <input name="kids_email" type="email" placeholder="hijos@familia.com" style="margin-bottom:8px">
+        <input name="kids_password" type="password" minlength="6" placeholder="Código de los niños (mínimo 6)">
+      </div>
+      <button class="btn big" type="submit">🛠️ Crear familia</button>
+    </form>
+    <p class="muted center" style="margin:10px 0 0">La cuenta de niños solo puede mirar: no tiene botones de edición y Supabase rechaza cualquier escritura con esa cuenta.</p>`;
+  }
+
+  function sheetAddAccount(fid, name) {
+    return `
+    <div class="sheet-head"><h3>➕ Cuenta para ${esc(name)}</h3><button class="sheet-close" data-act="close-sheet">✕</button></div>
+    <form id="form-add-account" data-fid="${fid}">
+      <div class="field"><label>Tipo de cuenta</label>
+        <select name="role">
+          <option value="parent">👨‍👩‍👧 Papás (puede escribir)</option>
+          <option value="kids">👧 Niños (solo lectura)</option>
+        </select>
+      </div>
+      <div class="field"><label>Email</label><input name="email" type="email" required placeholder="mama@familia.com"></div>
+      <div class="field"><label>Código (mínimo 6 caracteres)</label><input name="password" type="password" required minlength="6" placeholder="••••••"></div>
+      <button class="btn big" type="submit">➕ Crear cuenta</button>
+    </form>
+    <p class="muted center" style="margin:10px 0 0">Así mamá y papá pueden tener cada uno su cuenta en la misma familia.</p>`;
+  }
+
+  function sheetMyFamily() {
+    return `
+    <div class="sheet-head"><h3>🏠 Crear MI familia</h3><button class="sheet-close" data-act="close-sheet">✕</button></div>
+    <form id="form-my-family">
+      <div class="field"><label>Nombre de tu familia</label><input name="name" required placeholder="Nuestra familia"></div>
+      <button class="btn gold big" type="submit">➕ Crear</button>
+    </form>
+    <p class="muted center" style="margin:10px 0 0">Usarás tu propia cuenta de administrador como cuenta de papás.</p>`;
   }
 
   /* ---------- Zona padres ---------- */
@@ -688,6 +880,7 @@
   }
 
   function viewParents() {
+    if (state.role !== 'parent' && !state.isAdmin) { state.view = 'home'; return viewHome(); }
     const kids = state.data.children;
     if (kids.length && !state.childId) state.childId = kids[0].id;
     if (!kids.length) state.tab = 'hijos';
@@ -700,6 +893,7 @@
     <div class="topbar">
       <h2 class="page-title">🔐 Zona de papás</h2>
       <div class="grow"></div>
+      ${state.isAdmin ? '<button class="icon-btn" title="Administración" data-act="go-admin">🛠️</button>' : ''}
       <button class="icon-btn" title="Ver como hijo" data-act="preview">👀</button>
       <button class="icon-btn" title="Cerrar sesión" data-act="logout">🔒</button>
     </div>
@@ -815,7 +1009,7 @@
   function render() {
     const app = $('#app');
     if (!CONFIGURED) { app.innerHTML = viewNotConfigured(); return; }
-    const views = { home: viewHome, kids: viewKids, child: viewChild, login: viewLogin, parents: viewParents };
+    const views = { home: viewHome, kids: viewKids, child: viewChild, login: viewLogin, parents: viewParents, admin: viewAdmin };
     app.innerHTML = (views[state.view] || viewHome)();
   }
 
@@ -832,9 +1026,24 @@
       case 'go-home': state.view = 'home'; render(); break;
       case 'go-kids': state.view = 'kids'; render(); break;
       case 'go-parents':
-        if (state.session) { state.view = 'parents'; render(); }
+        if (state.role === 'parent' || state.isAdmin) { state.view = 'parents'; render(); }
         else { state.view = 'login'; render(); }
         break;
+      case 'go-admin':
+        state.view = 'admin';
+        try { await loadAdmin(); } catch (e) { console.error(e); toast('No se pudo cargar la lista de familias 📡', true); }
+        render();
+        break;
+      case 'new-family': openSheet(sheetNewFamily()); break;
+      case 'add-account': openSheet(sheetAddAccount(d.fid, d.name)); break;
+      case 'del-family':
+        if (seguro(`¿Borrar la familia "${d.name}" y TODOS sus datos?`)) {
+          await deleteFamily(d.fid);
+          await loadAdmin();
+          render();
+        }
+        break;
+      case 'my-family': openSheet(sheetMyFamily()); break;
       case 'select-child': state.childId = d.id; state.view = 'child'; render(); break;
       case 'preview': state.view = 'kids'; render(); break;
       case 'logout': await logout(false); break;
@@ -941,7 +1150,51 @@
     if (f.id === 'form-login') {
       const btn = f.querySelector('button[type="submit"]');
       btn.disabled = true; btn.textContent = 'Comprobando…';
-      await login(String(fd.get('code') || '').trim());
+      const ok = await login(String(fd.get('email') || '').trim(), String(fd.get('password') || ''));
+      if (!ok) render();
+      return;
+    }
+
+    if (f.id === 'form-new-family') {
+      const btn = f.querySelector('button[type="submit"]');
+      btn.disabled = true; btn.textContent = 'Creando…';
+      const res = await invokeAdmin({
+        action: 'create-family',
+        name: fd.get('name'),
+        parent_email: fd.get('parent_email'),
+        parent_password: fd.get('parent_password'),
+        kids_email: fd.get('kids_email') || null,
+        kids_password: fd.get('kids_password') || null
+      });
+      if (res.error) { btn.disabled = false; btn.textContent = '🛠️ Crear familia'; toast(res.error, true); return; }
+      closeSheet();
+      try { await loadAdmin(); } catch (e) { console.error(e); }
+      render();
+      openSheet(sheetCreada(res.emails || []));
+      return;
+    }
+
+    if (f.id === 'form-add-account') {
+      const btn = f.querySelector('button[type="submit"]');
+      btn.disabled = true; btn.textContent = 'Creando…';
+      const res = await invokeAdmin({
+        action: 'add-account',
+        family_id: f.dataset.fid,
+        role: fd.get('role'),
+        email: fd.get('email'),
+        password: fd.get('password')
+      });
+      if (res.error) { btn.disabled = false; btn.textContent = '➕ Crear cuenta'; toast(res.error, true); return; }
+      closeSheet();
+      try { await loadAdmin(); } catch (e) { console.error(e); }
+      render();
+      openSheet(sheetCreada(res.emails || []));
+      return;
+    }
+
+    if (f.id === 'form-my-family') {
+      closeSheet();
+      await createMyFamily(String(fd.get('name') || '').trim());
       return;
     }
 
@@ -998,7 +1251,7 @@
 
   /* Cierre automático de la zona de papás a los 15 min de inactividad */
   setInterval(() => {
-    if (state.view === 'parents' && Date.now() - lastActivity > 15 * 60 * 1000) logout(true);
+    if ((state.view === 'parents' || state.view === 'admin') && Date.now() - lastActivity > 15 * 60 * 1000) logout(true);
   }, 60000);
 
   /* ================= INICIO ================= */
@@ -1007,7 +1260,12 @@
       try {
         const { data } = await sb.auth.getSession();
         state.session = Boolean(data.session);
-        if (state.session) state.view = 'parents';
+        if (state.session) {
+          await loadIdentity();
+          if (state.role === 'kids') state.view = 'kids';
+          else if (state.role === 'parent' || state.isAdmin) state.view = 'parents';
+          else { await sb.auth.signOut(); state.session = null; toast('Esta cuenta no tiene familia asignada 🔐', true); }
+        }
         await loadData();
       } catch (err) {
         console.error(err);
