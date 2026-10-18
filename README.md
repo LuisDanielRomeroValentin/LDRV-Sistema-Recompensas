@@ -27,8 +27,8 @@ Sistema de tareas y recompensas para peques de la casa, funcionando **sin Google
 ## 🗄️ Paso 2 · Crear las tablas
 
 1. En el panel de Supabase entra en **SQL Editor** → **New query**.
-2. Pega **todo el contenido de [`sql/schema.sql`](sql/schema.sql)**, pero **antes de ejecutarlo** cambia la última línea: sustituye `tu@email.com` por **tu email real** (serás el superadministrador).
-3. Pulsa **Run**. Verás `Success. No rows returned`. 🎉
+2. Pega **todo el contenido de [`sql/schema.sql`](sql/schema.sql)** y pulsa **Run**.
+   ✅ Tu email de administrador ya viene sembrado dentro de ese archivo (no hay que hacer nada más).
 
 > ¿Ya tenías las tablas de la versión anterior (una sola familia)? En vez de `schema.sql`, ejecuta [`sql/migracion-multifamilia.sql`](sql/migracion-multifamilia.sql) (igual sustituyendo tu email al final).
 

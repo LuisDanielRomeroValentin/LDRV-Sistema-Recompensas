@@ -10,14 +10,19 @@
 create extension if not exists "pgcrypto";
 
 -- ------------------------------------------------------------
--- Administradores (el "super user"): pon aquí tu email
--- Ya desde este archivo puedes sembrar el tuyo, por ejemplo:
---   insert into public.admins (email) values ('tu@email.com')
---   on conflict do nothing;
+-- Administradores (el "super user")
 -- ------------------------------------------------------------
 create table if not exists public.admins (
   email text primary key
 );
+
+-- El email del superadministrador ya viene sembrado (se puede
+-- repetir la ejecución sin problema; para añadir más emails:
+--   insert into public.admins (email) values ('otro@email.com')
+--   on conflict do nothing;
+-- )
+insert into public.admins (email) values ('luisromerovalentin@gmail.com')
+on conflict do nothing;
 
 -- ------------------------------------------------------------
 -- Familias y sus cuentas de acceso
@@ -257,9 +262,4 @@ create policy "rewards_write"  on public.rewards for all to authenticated
   using ((is_parent() and family_id = my_family()) or is_admin())
   with check ((is_parent() and family_id = my_family()) or is_admin());
 
--- ------------------------------------------------------------
--- ¡IMPORTANTE! Sustituye tu@email.com y ejecuta (una sola vez):
---
--- insert into public.admins (email) values ('tu@email.com')
--- on conflict do nothing;
--- ------------------------------------------------------------
+-- (El email del administrador ya se sembró arriba con el INSERT)

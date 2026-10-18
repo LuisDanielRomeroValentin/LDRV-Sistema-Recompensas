@@ -5,8 +5,8 @@
    ============================================================ */
 window.APP_CONFIG = {
   /* 1) URL del proyecto → Supabase: Project Settings (⚙️) → API → "Project URL" */
-  SUPABASE_URL: "https://oobtewpujkdjtdyiegis.supabase.co",
+  SUPABASE_URL: "https://qzxqzpeyhwmbfncblmvf.supabase.co",
 
   /* 2) Clave pública → Supabase: Project Settings (⚙️) → API → "anon public" */
-  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Im9vYnRld3B1amtkanRkeWllZ2lzIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIzMTk3NDksImV4cCI6MjEwNzg5NTc0OX0.NmEQ9GEduYfWQqPZArcOFMEVCESo0zw3Hpqud2nCRWM"
+  SUPABASE_ANON_KEY: "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InF6eHF6cGV5aHdtYmZuY2JsbXZmIiwicm9sZSI6ImFub24iLCJpYXQiOjE3OTIzMjExNzcsImV4cCI6MjEwNzg5NzE3N30.uBbkizFUv2JpNWthCbEvDVfvRCzkRtFa1pOrs35Gk_s"
 };
