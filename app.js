@@ -127,11 +127,16 @@
 
   const childById = id => state.data.children.find(c => c.id === id);
 
-  function statsFor(childId) {
-    const d = state.data;
-    const done = d.completions.filter(x => x.child_id === childId && x.status === 'done').length;
-    const extra = d.extras.filter(x => x.child_id === childId && x.status === 'done').reduce((s, x) => s + x.stars, 0);
-    const points = d.penalties.filter(x => x.child_id === childId).reduce((s, x) => s + x.points, 0);
+  /* Las estrellas se cuentan POR SEMANA (lunes a domingo): cada semana empieza en 0.
+     El historial de semanas anteriores se conserva y se ve con ◀ ▶. */
+  const weekRange = ws => [toISO(ws), toISO(addDays(ws, 6))];
+  const inWeek = (iso, [a, b]) => iso >= a && iso <= b;
+
+  function statsFor(childId, ws = state.weekStart) {
+    const d = state.data, wr = weekRange(ws);
+    const done = d.completions.filter(x => x.child_id === childId && x.status === 'done' && inWeek(x.date, wr)).length;
+    const extra = d.extras.filter(x => x.child_id === childId && x.status === 'done' && inWeek(x.date, wr)).reduce((s, x) => s + x.stars, 0);
+    const points = d.penalties.filter(x => x.child_id === childId && inWeek(x.date, wr)).reduce((s, x) => s + x.points, 0);
     const lost = Math.floor(points / 3);
     return { done, extra, points, lost, dots: points % 3, total: Math.max(0, done + extra - lost) };
   }
@@ -452,7 +457,7 @@
   }
 
   function kidCard(kid) {
-    const s = statsFor(kid.id);
+    const s = statsFor(kid.id, startOfWeek(new Date()));
     return `
     <button class="kid-card" data-act="select-child" data-id="${kid.id}">
       <div class="kid-avatar" style="background:${esc(kid.color)}22">${esc(kid.emoji)}</div>
@@ -494,7 +499,7 @@
     <div class="star-total">
       <div class="big-star">⭐</div>
       <div class="count">${s.total}</div>
-      <div class="label">estrellas en total</div>
+      <div class="label">estrellas de esta semana</div>
       <div class="stat-row">
         <div class="stat ok"><div class="n">${s.done}</div><div class="t">Tareas ✅</div></div>
         <div class="stat ok"><div class="n">+${s.extra}</div><div class="t">Extras 🎁</div></div>
@@ -612,7 +617,7 @@
     const tasks = tasksForDay(kid.id, iso);
     const extras = extrasForDay(kid.id, iso);
     const perfect = tasks.length > 0 && tasks.every(t => t.status === 'done');
-    const pens = state.data.penalties.filter(p => p.child_id === kid.id).slice(0, 5);
+    const pens = state.data.penalties.filter(p => p.child_id === kid.id && inWeek(p.date, weekRange(state.weekStart))).slice(0, 5);
 
     return `
     ${childHead(kid, 'go-kids', 'Mis estrellas')}
@@ -792,7 +797,7 @@
   }
 
   function tabPenalizaciones() {
-    const pens = state.data.penalties.filter(p => p.child_id === state.childId);
+    const pens = state.data.penalties.filter(p => p.child_id === state.childId && inWeek(p.date, weekRange(state.weekStart)));
     const s = statsFor(state.childId);
     return `
     <div class="card">
@@ -813,7 +818,7 @@
       </form>
     </div>
     <div class="card">
-      <p class="card-title">📋 Historial (${pens.length})</p>
+      <p class="card-title">📋 Penalizaciones de esta semana (${pens.length})</p>
       ${pens.length ? `<div class="pen-list">${pens.map(p => `
         <div class="pen">
           <span class="pts">-${p.points} 🚫</span>
@@ -854,7 +859,7 @@
       </div>`;
     }).join('') + `
     <div class="card tight center muted">
-      Las recompensas se muestran a los hijos con las estrellas totales (tareas + extras − penalizaciones).
+      Las recompensas se muestran a los hijos con las estrellas de la semana (tareas + extras − penalizaciones). Cada lunes empiezan de nuevo en 0.
     </div>`;
   }
 
@@ -1259,6 +1264,22 @@
   setInterval(() => {
     if ((state.view === 'parents' || state.view === 'admin') && Date.now() - lastActivity > 15 * 60 * 1000) logout(true);
   }, 60000);
+
+  /* Si la app se queda abierta y llega un lunes, pasa sola a la semana nueva (estrellas a 0) */
+  let semanaActual = toISO(startOfWeek(new Date()));
+  function revisarSemana() {
+    const nueva = toISO(startOfWeek(new Date()));
+    if (nueva === semanaActual) return;
+    const estabaEnActual = toISO(state.weekStart) === semanaActual;
+    semanaActual = nueva;
+    if (!estabaEnActual) return; // si estaba mirando otra semana, no se la cambiamos
+    const h = new Date();
+    state.weekStart = startOfWeek(h);
+    state.day = Math.min(Math.max(weekdayNum(toISO(h)), 1), 5);
+    if (!document.querySelector('#sheet:not([hidden])')) render();
+  }
+  setInterval(revisarSemana, 60000);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) revisarSemana(); });
 
   /* ================= INICIO ================= */
   async function init() {
